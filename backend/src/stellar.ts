@@ -24,10 +24,6 @@ import { loadCircuit } from "stellar-confidential-token-sdk/proving/artifacts";
 import { fromHex } from "stellar-confidential-token-sdk";
 import { config } from "./config.js";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /** Derive the public address from a secret key. */
 export function publicKeyFrom(secret: string): string {
   return Keypair.fromSecret(secret).publicKey();
@@ -156,34 +152,28 @@ async function ensureRegistered(secretKey: string, context: SdkContext): Promise
   );
 }
 
-/**
- * Retry wrapper for testnet txBadSeq errors.
- * Waits for confirmation, retries once on sequence mismatch.
- */
-async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+/** Retry one txBadSeq submission after the previous testnet transaction settles. */
+export async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err: any) {
     const msg = String(err?.message ?? err);
     if (msg.includes("txBadSeq") || msg.includes("tx_bad_seq")) {
-      console.warn("txBadSeq — retrying once after 2s…");
-      await sleep(2000);
+      console.warn("txBadSeq encountered. Waiting 2s and retrying once...");
+      await new Promise((resolve) => setTimeout(resolve, 2000));
       return fn();
     }
     throw err;
   }
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-/** Register an account for confidential tokens if not already registered. */
+/** Register an account for confidential tokens if it is not already registered. */
 export async function registerAccount(secretKey: string): Promise<void> {
   const context = await getSdk();
   await ensureRegistered(secretKey, context);
 }
 
+/** Verify or register the configured supplier account without signing as the payer. */
 export async function ensureSupplierAccount(): Promise<void> {
   if (!supplierAddress) {
     throw new Error("Set SUPPLIER_ADDRESS or SUPPLIER_SECRET in backend/.env.");
@@ -205,7 +195,7 @@ export async function ensureSupplierAccount(): Promise<void> {
   }
 }
 
-/** Decrypt payments received by the supplier. Returns amounts. */
+/** Decrypt payments received by the supplier. */
 export async function decryptSupplierPayments(): Promise<
   Array<{ amount: number; txHash: string; timestamp: string }>
 > {
@@ -233,7 +223,7 @@ export interface AuditedTransfer {
   txHash: string;
 }
 
-/** Use auditor key to decrypt all transfers via fetchEvents + auditTransfer. */
+/** Decrypt transfer events using the Grumpkin scalar registered for the auditor ID. */
 export async function auditAllTransfers(): Promise<AuditedTransfer[]> {
   const context = await getSdk();
   if (!config.auditorGrumpkinSecretHex) {
