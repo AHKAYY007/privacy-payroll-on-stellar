@@ -1,19 +1,28 @@
-/**
- * Stellar Confidential Token SDK integration.
- *
- * All blockchain interaction is isolated here. The functions below are
- * stubbed with TODO markers — replace with real SDK calls once the
- * stellar-confidential-token-sdk dependency is installed.
- *
- * The real implementation will use:
- *   ChainClient, submitRegister, submitDeposit, submitTransfer,
- *   fetchEvents, auditTransfer, JsonFileStore, loadCircuit,
- *   randomScalar, auditorPublicKey, pointToBytes
- * from "stellar-confidential-token-sdk"
- */
-
-import { config } from "./config.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Keypair } from "@stellar/stellar-sdk";
+import {
+  ChainClient,
+  CircuitProver,
+  addressToField,
+  auditTransfer,
+  auditorPublicKey,
+  buildRegisterWitness,
+  deriveKeys,
+  deriveSk,
+  fetchEvents,
+  keypairSigner,
+  sep53Payload,
+  skSigningMessage,
+  StateEngine,
+  submitRegister,
+  type KeyPair,
+  type TransferEvent,
+} from "stellar-confidential-token-sdk";
+import { JsonFileStore } from "stellar-confidential-token-sdk/state/json-store";
+import { loadCircuit } from "stellar-confidential-token-sdk/proving/artifacts";
+import { fromHex } from "stellar-confidential-token-sdk";
+import { config } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,9 +33,128 @@ export function publicKeyFrom(secret: string): string {
   return Keypair.fromSecret(secret).publicKey();
 }
 
-export const businessAddress = publicKeyFrom(config.businessSecret);
-export const supplierAddress = publicKeyFrom(config.supplierSecret);
-export const auditorAddress = publicKeyFrom(config.auditorSecret);
+export const supplierAddress = config.supplierSecret
+  ? publicKeyFrom(config.supplierSecret)
+  : config.supplierAddress;
+
+const STATE_FILE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../data/confidential-state.json",
+);
+const stateStore = new JsonFileStore(STATE_FILE);
+const keysByAddress = new Map<string, KeyPair>();
+
+interface SdkContext {
+  client: ChainClient;
+  registerProver: CircuitProver;
+}
+
+let sdkInitialization: Promise<SdkContext> | undefined;
+
+async function getSdk(): Promise<SdkContext> {
+  if (!sdkInitialization) {
+    sdkInitialization = Promise.resolve().then(() => ({
+      client: new ChainClient({
+        rpcUrl: config.stellarRpcUrl,
+        networkPassphrase: config.stellarPassphrase,
+        contracts: {
+          token: config.confidentialContractId,
+          verifier: config.verifierContractId,
+          auditor: config.auditorContractId,
+        },
+      }),
+      registerProver: new CircuitProver(loadCircuit("register")),
+    })).catch((error: unknown) => {
+      sdkInitialization = undefined;
+      throw error;
+    });
+  }
+  return sdkInitialization;
+}
+
+function accountMaterial(secret: string) {
+  const keypair = Keypair.fromSecret(secret);
+  const address = keypair.publicKey();
+  let keys = keysByAddress.get(address);
+  if (!keys) {
+    const root = keypair.sign(
+      sep53Payload(skSigningMessage(config.confidentialContractId, address)) as Buffer,
+    );
+    const sk = deriveSk(root, config.confidentialContractId, address).sk;
+    keys = deriveKeys(sk, addressToField(config.confidentialContractId));
+    keysByAddress.set(address, keys);
+  }
+
+  return {
+    address,
+    keys,
+    signer: keypairSigner(secret, config.stellarPassphrase),
+  };
+}
+
+function stateEngine(client: ChainClient, address: string, keys: KeyPair): StateEngine {
+  return new StateEngine({
+    client,
+    store: stateStore,
+    keys,
+    address,
+    fromLedger: config.tokenDeployedAtLedger,
+  });
+}
+
+function stroopsToXlm(amount: bigint): number {
+  return Number(amount) / 10_000_000;
+}
+
+function engineForAccount(
+  client: ChainClient,
+  address: string,
+  keys: KeyPair,
+): StateEngine {
+  return stateEngine(client, address, keys);
+}
+
+async function fetchRecentEvents(client: ChainClient) {
+  const latestLedger = await client.latestLedger();
+  return fetchEvents(client, {
+    startLedger: Math.max(config.tokenDeployedAtLedger, latestLedger - 120_000),
+    contractId: config.confidentialContractId,
+  });
+}
+
+async function ensureRegistered(secretKey: string, context: SdkContext): Promise<void> {
+  const { address, keys, signer } = accountMaterial(secretKey);
+  const existing = await context.client.confidentialBalance(address);
+  if (existing) {
+    if (
+      !existing.spendingKey.equals(keys.Y) ||
+      !existing.viewingPublicKey.equals(keys.PVK)
+    ) {
+      throw new Error(
+        `${address} is already registered with different confidential keys.`,
+      );
+    }
+    if (existing.auditorId !== config.auditorId) {
+      throw new Error(
+        `${address} is registered under auditor id ${existing.auditorId}, expected ${config.auditorId}.`,
+      );
+    }
+    return;
+  }
+
+  const witness = buildRegisterWitness(keys, address);
+  const { proof } = await context.registerProver.prove(witness.inputs);
+  await withRetry(() =>
+    submitRegister(
+      context.client,
+      signer,
+      address,
+      config.auditorId,
+      witness,
+      proof,
+    ),
+  );
+}
 
 /**
  * Retry wrapper for testnet txBadSeq errors.
@@ -50,80 +178,52 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// ---------------------------------------------------------------------------
-// SDK stubs — replace with real calls
-// ---------------------------------------------------------------------------
-
-let _initialized = false;
-
-/**
- * One-time SDK initialisation (load circuits, create ChainClient, etc.)
- * Called lazily on first use.
- */
-async function ensureInitialized(): Promise<void> {
-  if (_initialized) return;
-  // TODO: real implementation
-  // const circuit = await loadCircuit();
-  // const client = new ChainClient({ rpcUrl: config.stellarRpcUrl, ... });
-  _initialized = true;
-}
-
 /** Register an account for confidential tokens if not already registered. */
 export async function registerAccount(secretKey: string): Promise<void> {
-  await ensureInitialized();
-  const address = publicKeyFrom(secretKey);
-  console.log(`[stub] registerAccount: ${address}`);
-  // TODO: submitRegister(client, { signerSecret: secretKey, ... })
-  await sleep(500); // simulate network delay
+  const context = await getSdk();
+  await ensureRegistered(secretKey, context);
 }
 
-/** Deposit plain tokens into the confidential wrapper for an account. */
-export async function depositTokens(
-  secretKey: string,
-  amount: number
-): Promise<void> {
-  await ensureInitialized();
-  console.log(`[stub] depositTokens: ${amount} for ${publicKeyFrom(secretKey)}`);
-  // TODO: submitDeposit(client, { signerSecret: secretKey, amount, ... })
-  await sleep(500);
-}
+export async function ensureSupplierAccount(): Promise<void> {
+  if (!supplierAddress) {
+    throw new Error("Set SUPPLIER_ADDRESS or SUPPLIER_SECRET in backend/.env.");
+  }
+  if (config.supplierSecret) {
+    await registerAccount(config.supplierSecret);
+    return;
+  }
 
-/** Confidential transfer. Returns the transaction hash. */
-export async function confidentialTransfer(
-  senderSecret: string,
-  recipientAddress: string,
-  amount: number
-): Promise<string> {
-  await ensureInitialized();
-  console.log(
-    `[stub] confidentialTransfer: ${amount} from ${publicKeyFrom(senderSecret)} → ${recipientAddress}`
-  );
-
-  const fakeTxHash = await withRetry(async () => {
-    // TODO: submitTransfer(client, { signerSecret: senderSecret, to: recipientAddress, amount, ... })
-    await sleep(1000);
-    // Return a fake hash for now
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    return Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-  });
-
-  return fakeTxHash;
+  const context = await getSdk();
+  const account = await context.client.confidentialBalance(supplierAddress);
+  if (!account) {
+    throw new Error(
+      `Supplier ${supplierAddress} is not registered. Connect that account through Freighter, register it on this token, then run setup again.`,
+    );
+  }
+  if (account.auditorId !== config.auditorId) {
+    throw new Error(`Supplier is registered with auditor id ${account.auditorId}, expected ${config.auditorId}.`);
+  }
 }
 
 /** Decrypt payments received by the supplier. Returns amounts. */
 export async function decryptSupplierPayments(): Promise<
-  Array<{ amount: number; txHash: string }>
+  Array<{ amount: number; txHash: string; timestamp: string }>
 > {
-  await ensureInitialized();
-  console.log("[stub] decryptSupplierPayments");
-  // TODO: Use fetchEvents + supplier secret key to decrypt received amounts
-  // fetchEvents(client, config.confidentialContractId)
-  //   .filter(transfer events to supplier)
-  //   .map(decrypt with supplier key)
-  return [];
+  if (!config.supplierSecret) {
+    throw new Error("Set SUPPLIER_SECRET to enable supplier-mode amount decryption.");
+  }
+  const { address, keys } = accountMaterial(config.supplierSecret);
+  const context = await getSdk();
+  const engine = engineForAccount(context.client, address, keys);
+  const { events } = await fetchRecentEvents(context.client);
+
+  return events
+    .filter((event): event is TransferEvent => event.type === "transfer" && event.to === address)
+    .map((event) => ({
+      amount: stroopsToXlm(engine.decryptIncoming(event.rE, event.vTilde, event.sigma).vTransfer),
+      txHash: event.txHash,
+      timestamp: `Ledger ${event.ledger}`,
+    }));
 }
 
 export interface AuditedTransfer {
@@ -135,15 +235,31 @@ export interface AuditedTransfer {
 
 /** Use auditor key to decrypt all transfers via fetchEvents + auditTransfer. */
 export async function auditAllTransfers(): Promise<AuditedTransfer[]> {
-  await ensureInitialized();
-  console.log("[stub] auditAllTransfers");
-  // TODO:
-  // const events = await fetchEvents(client, config.confidentialContractId);
-  // return events
-  //   .filter(isTransferEvent)
-  //   .map(e => {
-  //     const { amount } = auditTransfer(e, auditorSecret);
-  //     return { date: e.timestamp, supplier: e.to, amount, txHash: e.txHash };
-  //   });
-  return [];
+  const context = await getSdk();
+  if (!config.auditorGrumpkinSecretHex) {
+    throw new Error("Set AUDITOR_GRUMPKIN_SECRET_HEX to the scalar registered for this auditor id.");
+  }
+  const auditorSecret = fromHex(config.auditorGrumpkinSecretHex);
+  const [registeredAuditorKey, eventsResult] = await Promise.all([
+    context.client.auditorKey(config.auditorId),
+    fetchRecentEvents(context.client),
+  ]);
+  if (!auditorPublicKey(auditorSecret).equals(registeredAuditorKey)) {
+    throw new Error("AUDITOR_GRUMPKIN_SECRET_HEX does not match the key registered on-chain.");
+  }
+
+  return eventsResult.events
+    .filter((event): event is TransferEvent => event.type === "transfer")
+    .map((event) => {
+      const decrypted = auditTransfer(auditorSecret, event);
+      if (!decrypted.channelsAgree) {
+        throw new Error(`Auditor channels disagree for transaction ${event.txHash}.`);
+      }
+      return {
+        date: `Ledger ${event.ledger}`,
+        supplier: event.to,
+        amount: stroopsToXlm(decrypted.amount),
+        txHash: event.txHash,
+      };
+    });
 }

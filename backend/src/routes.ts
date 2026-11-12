@@ -1,42 +1,64 @@
 import { Router, type Request, type Response } from "express";
 import {
-  registerAccount,
-  depositTokens,
-  confidentialTransfer,
+  ensureSupplierAccount,
   decryptSupplierPayments,
   auditAllTransfers,
   supplierAddress,
 } from "./stellar.js";
 import { appendPayment, getAllPayments } from "./store.js";
+import { toCsv } from "./csv.js";
 import { config } from "./config.js";
 
 export const router = Router();
 
+router.get("/config", (_req: Request, res: Response) => {
+  res.json({
+    rpcUrl: config.stellarRpcUrl,
+    networkPassphrase: config.stellarPassphrase,
+    tokenContractId: config.confidentialContractId,
+    verifierContractId: config.verifierContractId,
+    auditorContractId: config.auditorContractId,
+    auditorId: config.auditorId,
+    deployedAtLedger: config.tokenDeployedAtLedger,
+    supplierAddress,
+    supplierName: config.supplierName,
+  });
+});
+
 // ── POST /api/setup ──
 router.post("/setup", async (_req: Request, res: Response) => {
   try {
-    // Register both accounts (idempotent — stubs just log)
-    await registerAccount(config.businessSecret);
-    await registerAccount(config.supplierSecret);
-
-    // Deposit starting balance for the business
-    const startingAmount = 10_000;
-    await depositTokens(config.businessSecret, startingAmount);
-
-    res.json({ ok: true, message: `Setup complete. Deposited ${startingAmount} for business.` });
+    // The payer registers from Freighter in the browser; this registers only
+    // the configured supplier account so it can receive confidential tokens.
+    await ensureSupplierAccount();
+    res.json({
+      ok: true,
+      message: "Supplier account is ready.",
+      supplierAddress,
+      supplierName: config.supplierName,
+    });
   } catch (err: any) {
     console.error("Setup error:", err);
-    res.status(500).json({ error: err.message ?? "Setup failed" });
+    const message = String(err?.message ?? err);
+    const missingAccount = message.match(/Account not found:\s*(G[A-Z2-7]+)/i);
+    if (missingAccount) {
+      const address = missingAccount[1];
+      res.status(400).json({
+        error: `Stellar account ${address} does not exist on this testnet. Fund it with test XLM using https://friendbot.stellar.org/?addr=${address}, then run setup again.`,
+        supplierAddress,
+      });
+      return;
+    }
+    res.status(500).json({ error: message || "Setup failed" });
   }
 });
 
-// ── POST /api/pay ──
-router.post("/pay", async (req: Request, res: Response) => {
+// ── POST /api/payments ──
+router.post("/payments", (req: Request, res: Response) => {
   try {
-    const { amount, invoiceNote } = req.body;
-
-    if (!amount || typeof amount !== "number" || amount <= 0) {
-      res.status(400).json({ error: "amount must be a positive number" });
+    const { txHash, invoiceNote } = req.body;
+    if (typeof txHash !== "string" || !/^[a-fA-F0-9]{64}$/.test(txHash)) {
+      res.status(400).json({ error: "txHash must be a 64-character transaction hash" });
       return;
     }
     if (!invoiceNote || typeof invoiceNote !== "string" || !invoiceNote.trim()) {
@@ -44,27 +66,17 @@ router.post("/pay", async (req: Request, res: Response) => {
       return;
     }
 
-    // Always pay the supplier from .env
-    const recipient = supplierAddress;
-
-    const txHash = await confidentialTransfer(
-      config.businessSecret,
-      recipient,
-      amount
-    );
-
-    // Persist record — amount is NOT stored (confidential)
     appendPayment({
       invoiceNote: invoiceNote.trim(),
-      supplier: recipient,
+      supplier: supplierAddress,
       txHash,
       timestamp: new Date().toISOString(),
     });
 
-    res.json({ txHash });
+    res.status(201).json({ ok: true });
   } catch (err: any) {
-    console.error("Pay error:", err);
-    res.status(500).json({ error: err.message ?? "Payment failed" });
+    console.error("Payment record error:", err);
+    res.status(500).json({ error: err.message ?? "Failed to save payment details" });
   }
 });
 
@@ -78,13 +90,13 @@ router.get("/supplier/payments", async (_req: Request, res: Response) => {
     const stored = getAllPayments();
     const byHash = new Map(stored.map((p) => [p.txHash, p]));
 
-    const result = decrypted.map((d) => {
+    const result = decrypted.filter((payment) => byHash.has(payment.txHash)).map((d) => {
       const record = byHash.get(d.txHash);
       return {
         amount: d.amount,
         invoiceNote: record?.invoiceNote ?? "",
         txHash: d.txHash,
-        timestamp: record?.timestamp ?? "",
+        timestamp: record?.timestamp ?? d.timestamp,
       };
     });
 
@@ -104,13 +116,16 @@ router.get("/auditor/ledger", async (_req: Request, res: Response) => {
     const stored = getAllPayments();
     const byHash = new Map(stored.map((p) => [p.txHash, p]));
 
-    const ledger = audited.map((a) => ({
-      date: a.date,
-      supplier: a.supplier,
-      amount: a.amount,
-      invoiceNote: byHash.get(a.txHash)?.invoiceNote ?? "",
-      txHash: a.txHash,
-    }));
+    const ledger = audited.filter((payment) => byHash.has(payment.txHash)).map((a) => {
+      const record = byHash.get(a.txHash);
+      return {
+        date: record?.timestamp ?? a.date,
+        supplier: a.supplier,
+        amount: a.amount,
+        invoiceNote: record?.invoiceNote ?? "",
+        txHash: a.txHash,
+      };
+    });
 
     res.json(ledger);
   } catch (err: any) {
@@ -126,18 +141,17 @@ router.get("/auditor/export.csv", async (_req: Request, res: Response) => {
     const stored = getAllPayments();
     const byHash = new Map(stored.map((p) => [p.txHash, p]));
 
-    const header = "date,supplier,amount,invoice note,tx hash";
-    const rows = audited.map((a) => {
-      const note = byHash.get(a.txHash)?.invoiceNote ?? "";
-      // Escape CSV fields that might contain commas or quotes
-      const escaped = (s: string) =>
-        s.includes(",") || s.includes('"')
-          ? `"${s.replace(/"/g, '""')}"`
-          : s;
-      return [a.date, a.supplier, String(a.amount), escaped(note), a.txHash].join(",");
+    const rows = audited.filter((payment) => byHash.has(payment.txHash)).map((a) => {
+      const record = byHash.get(a.txHash);
+      const date = record?.timestamp ?? a.date;
+      const note = record?.invoiceNote ?? "";
+      return [date, a.supplier, String(a.amount), note, a.txHash];
     });
 
-    const csv = [header, ...rows].join("\n");
+    const csv = toCsv([
+      ["date", "supplier", "amount", "invoice note", "tx hash"],
+      ...rows,
+    ]);
 
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", "attachment; filename=privatepay-ledger.csv");

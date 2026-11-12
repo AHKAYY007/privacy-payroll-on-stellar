@@ -3,3 +3,4 @@ dist/
 data/
 .env
 *.log
+frontend/public/vendor/bb/

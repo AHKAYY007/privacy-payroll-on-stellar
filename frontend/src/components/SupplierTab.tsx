@@ -27,9 +27,12 @@ export default function SupplierTab() {
   return (
     <div className="tab-panel">
       <div className="panel-header">
-        <h2>Received Payments</h2>
+        <div>
+          <h2>Incoming payments</h2>
+          <p className="table-description">Payments recorded for your supplier account.</p>
+        </div>
         <button onClick={loadPayments} disabled={loading} className="small">
-          {loading ? "Loading…" : "Refresh"}
+          {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
@@ -40,6 +43,7 @@ export default function SupplierTab() {
       )}
 
       {payments.length > 0 && (
+        <div className="table-wrap">
         <table>
           <thead>
             <tr>
@@ -52,7 +56,7 @@ export default function SupplierTab() {
           <tbody>
             {payments.map((p, i) => (
               <tr key={i}>
-                <td>{new Date(p.timestamp).toLocaleString()}</td>
+                <td>{p.timestamp.startsWith("Ledger ") ? p.timestamp : new Date(p.timestamp).toLocaleString()}</td>
                 <td className="num">{p.amount}</td>
                 <td>{p.invoiceNote}</td>
                 <td className="hash">
@@ -68,6 +72,7 @@ export default function SupplierTab() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

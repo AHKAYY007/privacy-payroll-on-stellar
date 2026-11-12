@@ -29,10 +29,13 @@ export default function AccountantTab() {
   return (
     <div className="tab-panel">
       <div className="panel-header">
-        <h2>Auditor Ledger</h2>
+        <div>
+          <h2>Payroll ledger</h2>
+          <p className="table-description">Only transfers recorded by this PrivatePay workspace are listed.</p>
+        </div>
         <div className="panel-actions">
           <button onClick={loadLedger} disabled={loading} className="small">
-            {loading ? "Loading…" : "Refresh"}
+            {loading ? "Refreshing…" : "Refresh"}
           </button>
           <a href={getExportCsvUrl()} download className="btn small">
             Download CSV
@@ -49,8 +52,9 @@ export default function AccountantTab() {
       {entries.length > 0 && (
         <>
           <p className="total">
-            Total paid: <strong>{total}</strong>
+            Total paid: <strong>{total.toLocaleString()} XLM</strong>
           </p>
+          <div className="table-wrap">
           <table>
             <thead>
               <tr>
@@ -83,6 +87,7 @@ export default function AccountantTab() {
               ))}
             </tbody>
           </table>
+          </div>
         </>
       )}
     </div>
