@@ -1,0 +1,358 @@
+"use client";
+
+/**
+ * Advanced mode: configure and deploy your own confidential token through the
+ * shared factory. The verifier and auditor are constant (a factory-deployed
+ * token is wired to the same registries), so only the underlying SEP-41 asset
+ * and the compliance configuration are chosen here. On success the app saves
+ * the deployment in its "advanced" slot and switches to serving it.
+ */
+
+import { useCallback, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  deployAllowlistAndToken,
+  deployToken,
+  predictAllowlistAddress,
+  predictTokenAddress,
+  randomSalt,
+  type AllowlistAndTokenParams,
+  type FactoryWiring,
+} from "stellar-confidential-token-sdk";
+import {
+  deployBlocklistAndToken,
+  deployVanillaToken,
+  predictBlocklistAddress,
+  predictVanillaTokenAddress,
+} from "@/lib/demo-contracts";
+import {
+  DEFAULT_DEPLOYMENT,
+  PROTOCOL,
+  XLM_SAC,
+  kindLabel,
+  type CtKind,
+  type Deployment,
+} from "@/lib/deployment";
+import { useActiveDeployment } from "@/lib/active-deployment";
+import { connectFreighter, type MessageSigner } from "@/lib/freighter";
+import { clientsFor } from "@/lib/rpc";
+import { errMsg } from "@/lib/err";
+import { truncateMiddle } from "@/lib/format";
+import { useLog } from "@/lib/use-log";
+import { PageShell } from "../page-shell";
+import { ErrorBox } from "../error-box";
+import { LogPanel } from "../log-panel";
+import { Addr } from "../addr";
+
+const CONFIGS: { kind: CtKind; title: string; blurb: string }[] = [
+  {
+    kind: "vanilla",
+    title: "No compliance",
+    blurb:
+      "A plain confidential token. No admin, no freeze, no policy. Anyone who registers can deposit, transfer, and withdraw.",
+  },
+  {
+    kind: "compliance",
+    title: "Compliance (freeze only)",
+    blurb:
+      "Adds an admin (you) who grants the compliance roles: a freezer can freeze and unfreeze individual accounts, and a frozen account is blocked from every operation until unfrozen. No external policy.",
+  },
+  {
+    kind: "allowlist",
+    title: "Compliance + Allowlist Policy",
+    blurb:
+      "Freeze/unfreeze plus an allowlist policy: only accounts the policy's manager (you) has explicitly allowed may transact, register included. Use it as a KYC gate — onboard a user by allowing their address after verifying them.",
+  },
+  {
+    kind: "blocklist",
+    title: "Compliance + Blocklist Policy",
+    blurb:
+      "Freeze/unfreeze plus a blocklist policy: everyone may transact except accounts the policy's manager (you) has blocked. Use it to enforce sanctions/AML denials — block an address to cut it off.",
+  },
+];
+
+export default function AdvancedPage() {
+  const router = useRouter();
+  const { saveAdvanced } = useActiveDeployment();
+
+  const [account, setAccount] = useState<string | null>(null);
+  const [underlying, setUnderlying] = useState(XLM_SAC);
+  const [kind, setKind] = useState<CtKind>("compliance");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [logs, log] = useLog(40);
+  const [check, setCheck] = useState<string | null>(null);
+
+  const factoryReady = DEFAULT_DEPLOYMENT.contracts.factory.length > 0;
+  const customUnderlying = underlying.trim() !== XLM_SAC;
+
+  const { client } = useMemo(() => clientsFor(DEFAULT_DEPLOYMENT), []);
+
+  const connect = useCallback(async () => {
+    setError(null);
+    setBusy("connecting");
+    try {
+      const signer = await connectFreighter();
+      setAccount(signer.publicKey);
+      log(`connected ${signer.publicKey}`);
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [log]);
+
+  // Best-effort SEP-41 sanity check on a custom underlying (non-blocking).
+  const checkUnderlying = useCallback(async () => {
+    setCheck("checking…");
+    try {
+      const dec = await client.simulate(underlying.trim(), "decimals", []);
+      setCheck(`looks like a SEP-41 token (decimals = ${dec.u32()})`);
+    } catch {
+      setCheck("could not read decimals() — not a SEP-41 token, or not deployed");
+    }
+  }, [client, underlying]);
+
+  const deploy = useCallback(async () => {
+    setError(null);
+    setBusy("deploying");
+    try {
+      const signer: MessageSigner = await connectFreighter();
+      setAccount(signer.publicKey);
+      const me = signer.publicKey;
+      const u = underlying.trim();
+      const wiring: FactoryWiring = {
+        factory: DEFAULT_DEPLOYMENT.contracts.factory,
+        underlying: u,
+        verifier: DEFAULT_DEPLOYMENT.contracts.verifier,
+        auditor: DEFAULT_DEPLOYMENT.contracts.auditor,
+      };
+      // The deployer administers everything it deploys here. sac_passthrough
+      // stays off: native XLM can't be deauthorized, and it traps on any
+      // underlying that isn't a Stellar Asset Contract.
+      const roles: AllowlistAndTokenParams = {
+        policyAdmin: me,
+        policyManager: me,
+        tokenAdmin: me,
+        sacPassthrough: false,
+      };
+      // Addresses derive from (kind, arguments, salt); a fresh salt lets the
+      // same account deploy the same configuration again.
+      const salt = randomSalt();
+
+      // Lower bound for the first event sync; the deploy + register events land
+      // at or after this ledger.
+      const deployedAtLedger = await client.latestLedger();
+
+      let policy: string | undefined;
+      if (kind === "allowlist") {
+        policy = await predictAllowlistAddress(client, wiring.factory, me, me, salt);
+      } else if (kind === "blocklist") {
+        policy = await predictBlocklistAddress(client, wiring.factory, me, me, salt);
+      }
+      const predicted =
+        kind === "vanilla"
+          ? await predictVanillaTokenAddress(client, wiring, salt)
+          : await predictTokenAddress(client, wiring, me, { policy: policy ?? null, sacPassthrough: false }, salt);
+      log(`deploying ${kindLabel(kind)} via factory ${truncateMiddle(wiring.factory, 4, 4)} (salt ${salt})`);
+      log(`the token will land at ${predicted}${policy ? `, its policy at ${policy}` : ""}`);
+
+      let token: string;
+      if (kind === "vanilla") {
+        token = await deployVanillaToken(client, signer, wiring, salt);
+      } else if (kind === "compliance") {
+        token = await deployToken(client, signer, wiring, me, { policy: null, sacPassthrough: false }, salt);
+      } else {
+        const res =
+          kind === "allowlist"
+            ? await deployAllowlistAndToken(client, signer, wiring, roles, salt)
+            : await deployBlocklistAndToken(client, signer, wiring, roles, salt);
+        token = res.token;
+        policy = res.policy;
+        log(`policy deployed: ${policy}`);
+      }
+      if (token !== predicted) throw new Error(`factory deployed ${token}, not the predicted ${predicted}`);
+      log(`token deployed: ${token}`);
+
+      const base = DEFAULT_DEPLOYMENT;
+      const adv: Deployment = {
+        id: "advanced",
+        label: `${truncateMiddle(token, 4, 4)}`,
+        kind,
+        protocol: PROTOCOL,
+        rpcUrl: base.rpcUrl,
+        networkPassphrase: base.networkPassphrase,
+        indexerUrl: base.indexerUrl,
+        deployedAtLedger,
+        auditorId: base.auditorId,
+        auditorSecretHex: base.auditorSecretHex,
+        contracts: {
+          token,
+          verifier: base.contracts.verifier,
+          auditor: base.contracts.auditor,
+          underlying: u,
+          factory: base.contracts.factory,
+          policy,
+        },
+        admin: kind === "vanilla" ? undefined : me,
+      };
+      saveAdvanced(adv);
+      log("saved as the active deployment");
+      // Compliant deployments land on the admin dashboard; vanilla on the wallet.
+      router.push(kind === "vanilla" ? "/wallet" : "/admin");
+    } catch (e) {
+      setError(errMsg(e));
+      log(`error: ${errMsg(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  }, [client, underlying, kind, log, saveAdvanced, router]);
+
+  return (
+    <PageShell
+      title={
+        <>
+          Advanced mode <span className="text-base font-normal text-neutral-500">· deploy your own token</span>
+        </>
+      }
+      subtitle="Configure a confidential token and deploy it through the shared factory. The factory holds the contract code; your Freighter account signs the deploy and becomes the token's admin (and its policy's manager) for compliant configurations. The verifier and auditor are reused unchanged."
+      badge={false}
+    >
+      {error && <ErrorBox className="mb-6">{error}</ErrorBox>}
+
+      {!factoryReady && (
+        <div className="mb-6 rounded border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200">
+          The shared factory has not been provisioned yet. Run{" "}
+          <code className="font-mono">scripts/deploy.ts</code> and paste the printed{" "}
+          <code className="font-mono">factory</code> id into{" "}
+          <code className="font-mono">packages/app/lib/deployment.ts</code>.
+        </div>
+      )}
+
+      <div className="space-y-6">
+        {/* Step 1: underlying */}
+        <section className="rounded border border-neutral-800 p-4">
+          <h2 className="mb-1 font-medium">1 · Underlying SEP-41 asset</h2>
+          <p className="mb-3 text-sm text-neutral-400">
+            The public token whose reserves back every confidential balance. Defaults to the native
+            XLM Stellar Asset Contract.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={underlying}
+              onChange={(e) => {
+                setUnderlying(e.target.value);
+                setCheck(null);
+              }}
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-xs outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={() => {
+                setUnderlying(XLM_SAC);
+                setCheck(null);
+              }}
+              className="rounded border border-neutral-700 px-3 py-2 text-xs font-medium hover:bg-neutral-800"
+            >
+              Use XLM SAC
+            </button>
+            <button
+              onClick={checkUnderlying}
+              className="rounded border border-neutral-700 px-3 py-2 text-xs font-medium hover:bg-neutral-800"
+            >
+              Check
+            </button>
+          </div>
+          {check && <p className="mt-2 text-xs text-neutral-400">{check}</p>}
+          {customUnderlying && (
+            <div className="mt-3 rounded border border-sky-900/70 bg-sky-950/20 p-3 text-xs leading-relaxed text-neutral-300">
+              <p className="mb-1 font-medium text-sky-300">Requirements for a custom underlying</p>
+              <ul className="list-disc space-y-1 pl-4 text-neutral-400">
+                <li>A deployed SEP-41 token contract (a Stellar Asset Contract or a compatible custom token).</li>
+                <li>
+                  Exact-transfer semantics: no fee-on-transfer and no rebasing — the confidential token
+                  assumes the amount deposited equals the amount credited.
+                </li>
+                <li>
+                  Each depositor must hold a balance of the asset and, for non-native assets, an
+                  established trustline before they can deposit.
+                </li>
+                <li>
+                  The wallet UI enters and shows amounts in whole XLM and scales by 10<sup>7</sup>
+                  (stroops) on-chain. A custom underlying whose precision is not 7 decimals will be
+                  mis-scaled by this demo.
+                </li>
+              </ul>
+            </div>
+          )}
+        </section>
+
+        {/* Step 2: configuration */}
+        <section className="rounded border border-neutral-800 p-4">
+          <h2 className="mb-1 font-medium">2 · Confidential token configuration</h2>
+          <p className="mb-3 text-sm text-neutral-400">Choose how compliance is enforced.</p>
+          <div className="space-y-2">
+            {CONFIGS.map((c) => (
+              <label
+                key={c.kind}
+                className={`flex cursor-pointer gap-3 rounded border p-3 transition-colors ${
+                  kind === c.kind
+                    ? "border-emerald-500/60 bg-emerald-500/10"
+                    : "border-neutral-800 hover:border-neutral-600"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="kind"
+                  checked={kind === c.kind}
+                  onChange={() => setKind(c.kind)}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="text-sm font-medium">{c.title}</div>
+                  <div className="mt-0.5 text-xs leading-relaxed text-neutral-400">{c.blurb}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+        </section>
+
+        {/* Step 3: deploy */}
+        <section className="rounded border border-neutral-800 p-4">
+          <h2 className="mb-1 font-medium">3 · Deploy</h2>
+          <p className="mb-3 text-sm text-neutral-400">
+            {account ? (
+              <>
+                Connected as <Addr value={account} className="text-neutral-300" />
+                {kind !== "vanilla" &&
+                  " — this account becomes the token's admin. Grant yourself the compliance roles on the admin dashboard next."}
+              </>
+            ) : (
+              "Connect Freighter to sign the deploy. The connected account becomes the token's admin for compliant configurations."
+            )}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {!account && (
+              <button
+                onClick={connect}
+                disabled={busy !== null}
+                className="rounded bg-neutral-800 px-4 py-2 text-sm font-medium hover:bg-neutral-700 disabled:opacity-50"
+              >
+                {busy === "connecting" ? "Connecting…" : "Connect Freighter"}
+              </button>
+            )}
+            <button
+              onClick={deploy}
+              disabled={busy !== null || !factoryReady || underlying.trim().length === 0}
+              className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
+            >
+              {busy === "deploying" ? "Deploying…" : `Deploy`}
+            </button>
+          </div>
+        </section>
+
+        <LogPanel logs={logs} />
+      </div>
+    </PageShell>
+  );
+}

@@ -186,6 +186,7 @@ The auditor sees amounts because auditor decryption is the intended accountabili
 | `frontend/` | Vite + React payroll UI, Freighter access, key derivation, browser proof generation, and supplier-side decryption. |
 | `backend/` | Express API, public chain configuration, supplier registration verification, invoice metadata JSON store, auditor decryption, and CSV export. |
 | SDK dependency | Pinned `stellar-confidential-token-sdk` package from GitHub, used for proofs, chain operations, and confidential state. The separate Next.js demo is not the PrivatePay frontend. |
+| `token/stellar-confidential-token-demo/` | Included source snapshot of the upstream confidential-token demo used as an implementation reference. Its Next.js app is separate; root `npm run install:all` installs only the PrivatePay backend and frontend. |
 
 The frontend vendors the SDK-pinned bb.js browser files before `dev` and `build`, and sends the COOP/COEP headers required by browser proof generation.
 

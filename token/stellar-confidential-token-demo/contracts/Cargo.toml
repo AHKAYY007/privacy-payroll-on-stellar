@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    # Vendored verbatim from OpenZeppelin/stellar-contracts tag v0.8.0,
+    # examples/confidential/* (package names kept, so the wasm outputs are
+    # confidential_<x>_example.wasm).
+    "verifier",
+    "auditor",
+    "compliant-token",
+    "allowlist-policy",
+    # Upstream's factory, extended append-only with the demo-owned kinds.
+    "factory",
+    # Demo-owned: upstream ships no vanilla token and no blocklist policy.
+    "vanilla-token",
+    "blocklist-policy",
+]
+
+[workspace.package]
+authors = ["brozorec"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/brozorec/stellar-confidential-token-demo"
+version = "0.1.0"
+
+# Every OpenZeppelin crate is the crates.io 0.8.0 release, pinned exactly: the
+# circuits, VKs and wire format all move together between releases.
+# Transitive deps (soroban-poseidon, ultrahonk_soroban_verifier,
+# stellar-governance) resolve from crates.io through these.
+#
+# soroban-sdk 28's build.rs refuses any wasm build that `stellar contract build`
+# did not start, so build through scripts/build-contracts.sh, not `cargo build`.
+[workspace.dependencies]
+soroban-sdk = "28.0.0"
+stellar-access = "=0.8.0"
+stellar-confidential = "=0.8.0"
+stellar-contract-utils = "=0.8.0"
+stellar-macros = "=0.8.0"
+stellar-tokens = "=0.8.0"
+
+# Soroban release profile: optimize for wasm code size and determinism.
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true

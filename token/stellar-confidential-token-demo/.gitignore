@@ -1,0 +1,30 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+.next/
+out/
+
+# Cloudflare (OpenNext + wrangler build output)
+.open-next/
+.wrangler/
+
+# Vendored bb.js browser build (copied from node_modules by scripts/vendor-bb.mjs)
+packages/app/public/vendor/
+
+# Rust / Soroban
+target/
+contracts/target/
+# soroban testutils output
+test_snapshots/
+
+# Env / secrets / generated
+.env
+.env.*
+!.env.example
+deployments/*.json
+.soroban/
+*.log
+
+# OS
+.DS_Store
