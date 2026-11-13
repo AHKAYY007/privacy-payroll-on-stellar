@@ -37,3 +37,7 @@ export function appendPayment(record: PaymentRecord) {
 export function getAllPayments(): PaymentRecord[] {
   return read();
 }
+
+export function getRecentPayments(limit = 20): PaymentRecord[] {
+  return read().slice(-limit).reverse();
+}

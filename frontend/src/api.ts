@@ -1,8 +1,8 @@
 import type {
   LedgerEntry,
+  PaymentHistoryEntry,
   PublicAppConfig,
   SetupResponse,
-  SupplierPayment,
 } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -44,8 +44,8 @@ export function recordPayment(txHash: string, invoiceNote: string): Promise<void
   });
 }
 
-export function getSupplierPayments(): Promise<SupplierPayment[]> {
-  return request<SupplierPayment[]>("/supplier/payments");
+export function getPaymentHistory(): Promise<PaymentHistoryEntry[]> {
+  return request<PaymentHistoryEntry[]>("/payments");
 }
 
 export function getAuditorLedger(): Promise<LedgerEntry[]> {

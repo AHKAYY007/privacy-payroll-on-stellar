@@ -9,6 +9,7 @@ import {
   buildTransferWitness,
   deriveKeys,
   deriveSk,
+  fetchEvents,
   sep53Payload,
   skSigningMessage,
   StateEngine,
@@ -18,6 +19,7 @@ import {
   submitTransfer,
   type KeyPair,
   type Signer,
+  type TransferEvent,
 } from "stellar-confidential-token-sdk";
 import registerCircuit from "stellar-confidential-token-sdk/circuits/register.json";
 import transferCircuit from "stellar-confidential-token-sdk/circuits/transfer.json";
@@ -28,7 +30,7 @@ import {
   signMessage,
   signTransaction,
 } from "@stellar/freighter-api";
-import type { PublicAppConfig } from "./types";
+import type { PaymentHistoryEntry, PublicAppConfig, ReceivedPayment } from "./types";
 import { ensureBrowserBackend } from "./bb-loader";
 
 type WalletBalance = {
@@ -37,7 +39,8 @@ type WalletBalance = {
 };
 
 const STROOPS_PER_XLM = 10_000_000n;
-let sessionWallet: ConfidentialWallet | null = null;
+type WalletSession = "holder" | "supplier";
+const sessionWallets = new Map<WalletSession, ConfidentialWallet>();
 
 function describeError(error: unknown): string {
   if (typeof error === "object" && error !== null && "message" in error) {
@@ -118,6 +121,7 @@ export class ConfidentialWallet {
   private readonly registerProver: CircuitProver;
   private readonly transferProver: CircuitProver;
   private readonly auditorId: number;
+  private readonly fromLedger: number;
 
   private constructor(
     address: string,
@@ -129,6 +133,7 @@ export class ConfidentialWallet {
   ) {
     this.address = address;
     this.auditorId = config.auditorId;
+    this.fromLedger = fromLedger;
     this.signer = signer;
     this.keys = keys;
     this.client = client;
@@ -143,7 +148,10 @@ export class ConfidentialWallet {
     this.transferProver = new CircuitProver(transferCircuit as never);
   }
 
-  static async connect(config: PublicAppConfig): Promise<ConfidentialWallet> {
+  static async connect(
+    config: PublicAppConfig,
+    session: WalletSession = "holder",
+  ): Promise<ConfidentialWallet> {
     const connection = await isConnected();
     if (connection.error) throw new Error(describeError(connection.error));
     if (!connection.isConnected) {
@@ -187,8 +195,9 @@ export class ConfidentialWallet {
     const keys = await deriveWalletKeys(access.address, config);
     const latestLedger = await client.latestLedger();
     const retentionFloor = Math.max(config.deployedAtLedger, latestLedger - 120_000);
-    sessionWallet = new ConfidentialWallet(access.address, config, client, retentionFloor, signer, keys);
-    return sessionWallet;
+    const wallet = new ConfidentialWallet(access.address, config, client, retentionFloor, signer, keys);
+    sessionWallets.set(session, wallet);
+    return wallet;
   }
 
   async register(): Promise<string | null> {
@@ -236,6 +245,41 @@ export class ConfidentialWallet {
     };
   }
 
+  async receivedPayments(history: PaymentHistoryEntry[]): Promise<ReceivedPayment[]> {
+    const account = await this.client.confidentialBalance(this.address);
+    if (!account) {
+      throw new Error("This Freighter account is not registered on the configured confidential token.");
+    }
+    if (!account.spendingKey.equals(this.keys.Y) || !account.viewingPublicKey.equals(this.keys.PVK)) {
+      throw new Error("This Freighter account is registered with different confidential keys.");
+    }
+
+    const recorded = new Map(history.map((payment) => [payment.txHash, payment]));
+    if (recorded.size === 0) return [];
+
+    const latestLedger = await this.client.latestLedger();
+    const { events } = await fetchEvents(this.client, {
+      startLedger: Math.max(this.fromLedger, latestLedger - 120_000),
+      contractId: this.client.cfg.contracts.token,
+    });
+
+    return events
+      .filter((event): event is TransferEvent =>
+        event.type === "transfer" && event.to === this.address && recorded.has(event.txHash),
+      )
+      .map((event) => {
+        const record = recorded.get(event.txHash)!;
+        const { vTransfer } = this.engine.decryptIncoming(event.rE, event.vTilde, event.sigma);
+        return {
+          amount: toXlm(vTransfer),
+          invoiceNote: record.invoiceNote,
+          supplier: this.address,
+          txHash: event.txHash,
+          timestamp: record.timestamp || `Ledger ${event.ledger}`,
+        };
+      });
+  }
+
   async pay(recipientAddress: string, amountXlm: string): Promise<string> {
     const amount = amountToStroops(amountXlm);
     const [sender, recipient] = await Promise.all([
@@ -271,6 +315,6 @@ export class ConfidentialWallet {
   }
 }
 
-export function getConnectedWallet(): ConfidentialWallet | null {
-  return sessionWallet;
+export function getConnectedWallet(session: WalletSession = "holder"): ConfidentialWallet | null {
+  return sessionWallets.get(session) ?? null;
 }

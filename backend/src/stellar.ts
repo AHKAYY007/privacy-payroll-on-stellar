@@ -29,9 +29,16 @@ export function publicKeyFrom(secret: string): string {
   return Keypair.fromSecret(secret).publicKey();
 }
 
-export const supplierAddress = config.supplierSecret
-  ? publicKeyFrom(config.supplierSecret)
-  : config.supplierAddress;
+function supplierSecretAddress(): string | null {
+  if (!config.supplierSecret) return null;
+  try {
+    return publicKeyFrom(config.supplierSecret);
+  } catch {
+    return null;
+  }
+}
+
+export const supplierAddress = config.supplierAddress || supplierSecretAddress() || "";
 
 const STATE_FILE = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -178,42 +185,18 @@ export async function ensureSupplierAccount(): Promise<void> {
   if (!supplierAddress) {
     throw new Error("Set SUPPLIER_ADDRESS or SUPPLIER_SECRET in backend/.env.");
   }
-  if (config.supplierSecret) {
-    await registerAccount(config.supplierSecret);
-    return;
-  }
-
-  const context = await getSdk();
-  const account = await context.client.confidentialBalance(supplierAddress);
-  if (!account) {
+  const secretAddress = supplierSecretAddress();
+  if (config.supplierSecret && !secretAddress && !config.supplierAddress) {
     throw new Error(
-      `Supplier ${supplierAddress} is not registered. Connect that account through Freighter, register it on this token, then run setup again.`,
+      "SUPPLIER_SECRET is not a valid Stellar secret key (it must start with S...). Set the supplier's public G... address in SUPPLIER_ADDRESS instead.",
     );
   }
-  if (account.auditorId !== config.auditorId) {
-    throw new Error(`Supplier is registered with auditor id ${account.auditorId}, expected ${config.auditorId}.`);
+  if (secretAddress && config.supplierAddress && secretAddress !== config.supplierAddress) {
+    throw new Error("SUPPLIER_SECRET and SUPPLIER_ADDRESS refer to different supplier accounts.");
   }
-}
-
-/** Decrypt payments received by the supplier. */
-export async function decryptSupplierPayments(): Promise<
-  Array<{ amount: number; txHash: string; timestamp: string }>
-> {
-  if (!config.supplierSecret) {
-    throw new Error("Set SUPPLIER_SECRET to enable supplier-mode amount decryption.");
+  if (secretAddress) {
+    await registerAccount(config.supplierSecret);
   }
-  const { address, keys } = accountMaterial(config.supplierSecret);
-  const context = await getSdk();
-  const engine = engineForAccount(context.client, address, keys);
-  const { events } = await fetchRecentEvents(context.client);
-
-  return events
-    .filter((event): event is TransferEvent => event.type === "transfer" && event.to === address)
-    .map((event) => ({
-      amount: stroopsToXlm(engine.decryptIncoming(event.rE, event.vTilde, event.sigma).vTransfer),
-      txHash: event.txHash,
-      timestamp: `Ledger ${event.ledger}`,
-    }));
 }
 
 export interface AuditedTransfer {

@@ -17,7 +17,7 @@ Private supplier payments on Stellar Testnet using Freighter and the Confidentia
 - [x] Setup verifies the supplier recipient; it does not sign as the payer.
 - [x] No payer private key is read from `.env`; transaction signing is handled by Freighter.
 - [x] Store invoice note, supplier address, transaction hash, and timestamp only; never store amount.
-- [x] Supplier endpoint decrypts incoming payments; auditor endpoint decrypts app-recorded transfer events and exports CSV.
+- [x] Supplier mode decrypts incoming payments in the supplier's Freighter-connected browser; auditor endpoint decrypts app-recorded transfer events and exports CSV.
 - [x] CSV escaping covers commas, quotes, and embedded newlines.
 - [x] Retry a transaction once on `txBadSeq`.
 
@@ -27,7 +27,7 @@ Private supplier payments on Stellar Testnet using Freighter and the Confidentia
 - [x] Derive payer keys from two verified, matching Freighter SEP-53 signatures.
 - [x] Persist wallet state in browser localStorage and reconstruct spendable openings from recent events.
 - [x] Prove registration and transfer in-browser; Freighter signs each submitted payer transaction.
-- [x] Support a public supplier address registered by the supplier wallet; optional backend supplier secret enables server-side registration/decryption.
+- [x] Supplier mode uses a separate Freighter session, registers the supplier when needed, and decrypts only app-recorded incoming transfers in the browser; it never requires the supplier secret on the backend.
 - [x] Validate the configured Grumpkin auditor secret against the registered on-chain auditor public key.
 
 ## Verification
@@ -40,7 +40,7 @@ Private supplier payments on Stellar Testnet using Freighter and the Confidentia
 - [ ] CSV export against live ledger data; requires a successful testnet transfer.
 
 ## Remaining Setup
-- Configure valid testnet contract IDs, `SUPPLIER_ADDRESS`, and `AUDITOR_GRUMPKIN_SECRET_HEX` in `backend/.env`; add `SUPPLIER_SECRET` only when server-side supplier registration/decryption is desired.
+- Configure valid testnet contract IDs, `SUPPLIER_ADDRESS`, and `AUDITOR_GRUMPKIN_SECRET_HEX` in `backend/.env`; `SUPPLIER_SECRET` is optional for server-side supplier registration only.
 - Fund the connected Freighter account and configured supplier Stellar account with test XLM.
 - Enable Freighter on Stellar Testnet. RPC event history is limited to roughly seven days unless an indexer is configured.
 - No automated tests were added, per project request.

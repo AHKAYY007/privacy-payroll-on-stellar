@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { getPublicConfig, recordPayment, setup } from "../api";
+import { getPaymentHistory, getPublicConfig, recordPayment, setup } from "../api";
 import { ConfidentialWallet, getConnectedWallet } from "../wallet";
-import type { PublicAppConfig } from "../types";
+import type { PaymentHistoryEntry, PublicAppConfig } from "../types";
 
 const EXPLORER = "https://stellar.expert/explorer/testnet/tx/";
 
@@ -18,11 +18,24 @@ export default function PayTab() {
   const [balance, setBalance] = useState({ spendable: 0, receiving: 0 });
   const [walletBusy, setWalletBusy] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [history, setHistory] = useState<PaymentHistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    getPaymentHistory()
+      .then((payments) => {
+        if (active) setHistory(payments);
+      })
+      .catch((e: unknown) => {
+        if (active) setHistoryError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (active) setHistoryLoading(false);
+      });
     getPublicConfig()
       .then(async (config) => {
         if (!active) return;
@@ -123,8 +136,10 @@ export default function PayTab() {
         await recordPayment(submittedHash, invoiceNote.trim());
         setInvoiceNote("");
         setNotice("Payment sent and invoice note saved.");
+        setHistory(await getPaymentHistory());
       } catch {
         setNotice("Payment was sent, but its invoice note could not be saved. Keep the transaction hash below.");
+        setHistoryError("This payment's invoice note was not saved to the local ledger.");
       }
       setBalance(await wallet.refresh());
     } catch (e: any) {
@@ -179,6 +194,17 @@ export default function PayTab() {
       )}
 
       <form onSubmit={handlePay} className="pay-form">
+        <div className="payment-form-heading">
+          <div>
+            <p className="eyebrow">NEW PAYMENT</p>
+            <h2>Prepare a supplier payment</h2>
+            <p>Invoice details stay with your records. The transfer amount is encrypted on-chain.</p>
+          </div>
+          <div className="privacy-seal" aria-label="Confidential amount">
+            <span>AMOUNT</span>
+            <strong>PRIVATE</strong>
+          </div>
+        </div>
         <label>
           Supplier
           <select disabled>
@@ -195,6 +221,7 @@ export default function PayTab() {
         <label>
           Amount
           <input
+            className="amount-entry"
             type="number"
             min="0.0000001"
             step="0.0000001"
@@ -219,6 +246,10 @@ export default function PayTab() {
         <button type="submit" disabled={loading || !setupDone} className="primary">
           {loading ? "Proving and signing…" : "Send privately"}
         </button>
+        <div className="payment-form-footnote">
+          <span className="lock-glyph" aria-hidden="true">◈</span>
+          <span>Only the connected account can authorize this transfer.</span>
+        </div>
       </form>
 
       {error && <div className="error-msg">{error}</div>}
@@ -247,6 +278,50 @@ export default function PayTab() {
           </p>
         </div>
       )}
+
+      <section className="payment-history" aria-labelledby="payment-history-title">
+        <div className="history-heading">
+          <div>
+            <p className="eyebrow">RECENT ACTIVITY</p>
+            <h2 id="payment-history-title">Transaction history</h2>
+          </div>
+          <span className="history-count">{history.length.toString().padStart(2, "0")} RECORDS</span>
+        </div>
+        {historyError && <p className="history-message">{historyError}</p>}
+        {historyLoading ? (
+          <p className="history-message">Loading saved payments…</p>
+        ) : history.length === 0 ? (
+          <p className="history-message">No payments recorded yet. Completed payments will appear here.</p>
+        ) : (
+          <div className="table-wrap history-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Supplier</th>
+                  <th>Invoice note</th>
+                  <th>Transaction</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((payment) => (
+                  <tr key={payment.txHash}>
+                    <td>{new Date(payment.timestamp).toLocaleString()}</td>
+                    <td>{appConfig?.supplierName ?? "Supplier"}</td>
+                    <td>{payment.invoiceNote}</td>
+                    <td className="hash">
+                      <a href={`${EXPLORER}${payment.txHash}`} target="_blank" rel="noopener noreferrer">
+                        {payment.txHash.slice(0, 8)}…{payment.txHash.slice(-6)} ↗
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="history-privacy-note">Amounts are intentionally omitted from this off-chain activity list.</p>
+      </section>
     </div>
   );
 }

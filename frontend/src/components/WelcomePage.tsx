@@ -16,10 +16,10 @@ export default function WelcomePage({ onLaunch }: WelcomePageProps) {
       <section className="welcome-hero">
         <div className="welcome-copy">
           <p className="eyebrow">PRIVATE PAYROLL · STELLAR</p>
-          <h1>Pay suppliers.<br /><em>Keep amounts private.</em></h1>
+          <h1>Run payroll.<br /><em>Keep amounts private.</em></h1>
           <p className="welcome-description">
-            A focused payroll workspace for sending confidential supplier payments,
-            keeping invoice records, and giving your accountant a clear audit trail.
+              Supplier payments with a private amount, an invoice trail, and an
+              accountant view built into the same payroll run.
           </p>
           <button className="launch-button" onClick={onLaunch}>
             Open payroll workspace <span aria-hidden="true">↗</span>
@@ -30,13 +30,13 @@ export default function WelcomePage({ onLaunch }: WelcomePageProps) {
         <div className="payroll-preview" aria-label="PrivatePay payroll overview preview">
           <div className="preview-topline">
             <div>
-              <span className="preview-kicker">THIS MONTH</span>
-              <strong>Supplier payroll</strong>
+              <span className="preview-kicker">PAYROLL REGISTER / 11.26</span>
+              <strong>November supplier run</strong>
             </div>
             <span className="preview-period">NOV 2026</span>
           </div>
           <div className="preview-total">
-            <span>Confidential transfers</span>
+            <span>PUBLICLY VISIBLE AMOUNT</span>
             <div><strong>••••••</strong><span className="private-pill">PRIVATE</span></div>
           </div>
           <div className="preview-rule" />

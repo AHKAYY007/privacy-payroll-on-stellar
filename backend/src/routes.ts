@@ -1,11 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import {
   ensureSupplierAccount,
-  decryptSupplierPayments,
   auditAllTransfers,
   supplierAddress,
 } from "./stellar.js";
-import { appendPayment, getAllPayments } from "./store.js";
+import { appendPayment, getAllPayments, getRecentPayments } from "./store.js";
 import { toCsv } from "./csv.js";
 import { config } from "./config.js";
 
@@ -28,12 +27,12 @@ router.get("/config", (_req: Request, res: Response) => {
 // ── POST /api/setup ──
 router.post("/setup", async (_req: Request, res: Response) => {
   try {
-    // The payer registers from Freighter in the browser; this registers only
-    // the configured supplier account so it can receive confidential tokens.
+    // The payer registers from Freighter in the browser. Supplier mode can
+    // register the configured recipient from the supplier's own Freighter.
     await ensureSupplierAccount();
     res.json({
       ok: true,
-      message: "Supplier account is ready.",
+      message: "Supplier address is configured.",
       supplierAddress,
       supplierName: config.supplierName,
     });
@@ -54,6 +53,10 @@ router.post("/setup", async (_req: Request, res: Response) => {
 });
 
 // ── POST /api/payments ──
+router.get("/payments", (_req: Request, res: Response) => {
+  res.json(getRecentPayments());
+});
+
 router.post("/payments", (req: Request, res: Response) => {
   try {
     const { txHash, invoiceNote } = req.body;
@@ -77,33 +80,6 @@ router.post("/payments", (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("Payment record error:", err);
     res.status(500).json({ error: err.message ?? "Failed to save payment details" });
-  }
-});
-
-// ── GET /api/supplier/payments ──
-router.get("/supplier/payments", async (_req: Request, res: Response) => {
-  try {
-    // Decrypt amounts from chain
-    const decrypted = await decryptSupplierPayments();
-
-    // Join with stored invoice notes by txHash
-    const stored = getAllPayments();
-    const byHash = new Map(stored.map((p) => [p.txHash, p]));
-
-    const result = decrypted.filter((payment) => byHash.has(payment.txHash)).map((d) => {
-      const record = byHash.get(d.txHash);
-      return {
-        amount: d.amount,
-        invoiceNote: record?.invoiceNote ?? "",
-        txHash: d.txHash,
-        timestamp: record?.timestamp ?? d.timestamp,
-      };
-    });
-
-    res.json(result);
-  } catch (err: any) {
-    console.error("Supplier payments error:", err);
-    res.status(500).json({ error: err.message ?? "Failed to fetch supplier payments" });
   }
 });
 

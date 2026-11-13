@@ -26,60 +26,61 @@ export default function App() {
   }[view];
 
   return (
-    <div className="workspace-app">
+    <div className="workspace-shell">
       <Banner />
-      <header className="workspace-topbar">
-        <button className="brand-lockup workspace-brand" onClick={() => setView("welcome")}>
-          <span className="brand-mark" aria-hidden="true">P</span>
-          <span>privatepay</span>
-        </button>
-        <div className="workspace-topbar-right">
-          <span className="network-status"><span /> Stellar Testnet</span>
-          <span className="topbar-divider" />
-          <span className="mode-label">{modeTitle}</span>
+      <div className="workspace-layout">
+        <aside className="workspace-rail">
+          <button className="brand-lockup workspace-brand" onClick={() => setView("welcome")}>
+            <span className="brand-mark" aria-hidden="true">P</span>
+            <span>privatepay</span>
+          </button>
+          <div className="rail-rule" />
+          <p className="rail-caption">PAYROLL DESK</p>
+          <nav className="rail-nav" aria-label="Payroll workspace modes">
+            <button className={view === "holder" ? "active" : ""} onClick={() => setView("holder")}>
+              <span className="rail-glyph">↗</span><span>Account holder</span><span className="rail-arrow">→</span>
+            </button>
+            <button className={view === "supplier" ? "active" : ""} onClick={() => setView("supplier")}>
+              <span className="rail-glyph">↓</span><span>Supplier view</span><span className="rail-arrow">→</span>
+            </button>
+            <button className={view === "auditor" ? "active" : ""} onClick={() => setView("auditor")}>
+              <span className="rail-glyph">≡</span><span>Auditor view</span><span className="rail-arrow">→</span>
+            </button>
+          </nav>
+          <div className="rail-spacer" />
+          <div className="rail-network"><span className="network-status"><span /> Testnet connected</span><small>Stellar · Developer preview</small></div>
+          <button className="rail-overview" onClick={() => setView("welcome")}>← Product overview</button>
+        </aside>
+        <div className="workspace-main">
+          <header className="workspace-topbar">
+            <div className="breadcrumb"><span>PRIVATEPAY</span><b>/</b><strong>{modeTitle}</strong></div>
+            <span className="topbar-period">PAYROLL PERIOD <strong>NOV 2026</strong></span>
+          </header>
+          <main className="workspace-content">
+            <div className="workspace-heading">
+              <div>
+                <p className="eyebrow">{view === "holder" ? "PAYMENTS & BALANCES" : view === "supplier" ? "SUPPLIER ACCOUNT" : "FINANCE CONTROL"}</p>
+                <h1>{modeTitle}</h1>
+                <p className="workspace-subtitle">
+                  {view === "holder" && "Prepare and send confidential supplier payments."}
+                  {view === "supplier" && "Review incoming supplier payments and invoice details."}
+                  {view === "auditor" && "Review the recorded payroll ledger and export it for accounting."}
+                </p>
+              </div>
+              <div className="mode-chip"><span>ACTIVE VIEW</span><strong>{view === "holder" ? "01" : view === "supplier" ? "02" : "03"}</strong></div>
+            </div>
+            <section className="workspace-panel">
+              {view === "holder" && <PayTab />}
+              {view === "supplier" && <SupplierTab />}
+              {view === "auditor" && <AccountantTab />}
+            </section>
+          </main>
+          <footer className="workspace-footer">
+            <span>PRIVATEPAY <i>·</i> TESTNET PROTOTYPE</span>
+            <span>CONFIDENTIAL TOKEN PREVIEW</span>
+          </footer>
         </div>
-      </header>
-      <main className="workspace-content">
-        <div className="workspace-heading">
-          <div>
-            <p className="eyebrow">PAYROLL WORKSPACE</p>
-            <h1>{modeTitle}</h1>
-            <p className="workspace-subtitle">
-              {view === "holder" && "Prepare and send confidential supplier payments."}
-              {view === "supplier" && "Review incoming supplier payments and invoice details."}
-              {view === "auditor" && "Review the recorded payroll ledger and export it for accounting."}
-            </p>
-          </div>
-          <label className="mode-switch-label">
-            <span>View in</span>
-            <select value={view} onChange={(event) => setView(event.target.value as View)}>
-              <option value="holder">Account holder mode</option>
-              <option value="supplier">Supplier mode</option>
-              <option value="auditor">Auditor mode</option>
-            </select>
-          </label>
-        </div>
-        <nav className="workspace-nav" aria-label="Payroll workspace modes">
-          <button className={view === "holder" ? "active" : ""} onClick={() => setView("holder")}>
-            Account holder
-          </button>
-          <button className={view === "supplier" ? "active" : ""} onClick={() => setView("supplier")}>
-            Supplier view
-          </button>
-          <button className={view === "auditor" ? "active" : ""} onClick={() => setView("auditor")}>
-            Auditor view
-          </button>
-        </nav>
-        <section className="workspace-panel">
-          {view === "holder" && <PayTab />}
-          {view === "supplier" && <SupplierTab />}
-          {view === "auditor" && <AccountantTab />}
-        </section>
-      </main>
-      <footer className="workspace-footer">
-        <span>PrivatePay · Testnet prototype</span>
-        <button onClick={() => setView("welcome")}>Back to overview</button>
-      </footer>
+      </div>
     </div>
   );
 }

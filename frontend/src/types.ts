@@ -19,17 +19,21 @@ export interface SetupResponse {
   supplierName: string;
 }
 
-export interface SupplierPayment {
-  amount: number;
-  invoiceNote: string;
-  txHash: string;
-  timestamp: string;
-}
-
 export interface LedgerEntry {
   date: string;
   supplier: string;
   amount: number;
   invoiceNote: string;
   txHash: string;
+}
+
+export interface PaymentHistoryEntry {
+  invoiceNote: string;
+  supplier: string;
+  txHash: string;
+  timestamp: string;
+}
+
+export interface ReceivedPayment extends PaymentHistoryEntry {
+  amount: number;
 }
